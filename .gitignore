@@ -1,0 +1,4 @@
+/models
+/catboost_info
+/__pycache__
+/data/*.csv
