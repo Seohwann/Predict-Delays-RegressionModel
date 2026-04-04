@@ -239,173 +239,20 @@ LAYOUT_KEY = "layout_id"
 
 ---
 
-## 피처 엔지니어링 함수
+## 피처 엔지니어링 (포괄 설명)
 
-### `add_basic_time_features(df)`
-시간/순서 관련 피처를 생성합니다.
+`utils.py`의 `make_features(df)`에서 여러 피처 생성 함수를 순차적으로 적용합니다.
 
-예:
-- `slot_idx`
-- `slot_from_end`
-- `is_first_slot`
-- `is_last_slot`
-- `slot_progress`
-- `slot_mid_distance`
-- `slot_bin_early`, `slot_bin_mid`, `slot_bin_late`
-- `shift_hour_sin`, `shift_hour_cos`
-- `day_of_week_sin`, `day_of_week_cos`
+핵심 아이디어는 아래 5가지입니다.
 
-의미:
-- 시나리오 내 현재 위치
-- 하루/요일의 주기적 특성
-- 초반/중반/후반 효과 반영
+- 시간/시나리오 진행도 표현: 초반/중반/후반 위치, 주기성(시간/요일) 반영
+- 자원 대비 부하 표현: 주문량 대비 로봇/인력/설비 여유도 반영
+- 병목/상호작용 표현: 혼잡도, 패킹, 도크, 네트워크 지연의 복합 효과 반영
+- 시계열 변화 표현: lag, diff, rolling, 누적 통계로 추세와 변동성 반영
+- 그룹 상대 위치 표현: 같은 `scenario_id` 내 평균/최대/최소 대비 현재 수준 반영
 
----
-
-### `add_robot_features(df)`
-로봇 운영 상태 관련 피처를 생성합니다.
-
-예:
-- `total_robot_count`
-- `active_robot_ratio`
-- `idle_robot_ratio`
-- `charging_robot_ratio`
-- `orders_per_active_robot`
-- `orders_per_total_robot`
-- `robots_per_charging_station`
-- `robots_per_packing_station`
-
-의미:
-- 자원 대비 부하
-- 활성/대기/충전 비율
-- 로봇과 설비 간 밀도 관계
-
----
-
-### `add_pressure_features(df)`
-운영 병목과 압력을 표현하는 피처를 생성합니다.
-
-예:
-- `orders_per_staff`
-- `pack_pressure_index`
-- `dock_pressure_index`
-- `traffic_load_index`
-- `battery_stress_index`
-- `orders_per_packing_station`
-- `orders_per_intersection`
-- `congestion_per_intersection`
-- `pack_dock_interaction`
-- `congestion_robot_interaction`
-- `triple_pressure_index`
-- `process_bottleneck_index`
-
-예를 들어,
-```python
-df["pack_dock_interaction"] = df["pack_utilization"] * df["loading_dock_util"]
-```
-
-이런 피처는
-- 패킹 공정이 바쁜 정도
-- 도크가 바쁜 정도
-를 각각 따로 보는 것이 아니라,
-
-**“둘 다 동시에 높을 때 병목이 더 심해질 수 있다”**
-는 상호작용을 모델이 더 잘 학습하게 합니다.
-
----
-
-### `add_environment_features(df)`
-환경 및 시스템 상태 관련 피처를 만듭니다.
-
-예:
-- `env_risk_index`
-- `system_latency_sum`
-- `system_latency_mul`
-- `log_order_inflow_15m`
-- `log_wms_response_time_ms`
-- `log_network_latency_ms`
-
-의미:
-- 시스템 지연
-- 환경 리스크
-- 긴 꼬리 분포를 갖는 값의 스케일 완화
-
----
-
-### `add_lag_features(df)`
-시계열 흐름을 반영한 피처를 생성합니다.
-
-예:
-- `col_lag1`, `col_lag2`
-- `col_diff1`, `col_diff2`
-- `col_diff1_ratio`, `col_diff2_ratio`
-- `col_roll3_mean`, `col_roll5_mean`
-- `col_roll3_min`, `col_roll3_max`
-- `col_ratio_to_roll3_mean`
-
-의미:
-- 직전 대비 변화량
-- 최근 평균 대비 현재 수준
-- 추세와 변동성 반영
-
----
-
-### `add_cumulative_features(df)`
-시나리오 내부 누적 상태를 나타내는 피처를 생성합니다.
-
-예:
-- `cum_sum`
-- `cum_mean`
-- `cum_max`
-- `cum_min`
-
-의미:
-- 지금까지 누적된 부하
-- 현재까지의 평균 상태
-- 장기적인 압력 누적 효과
-
----
-
-### `add_group_relative_features(df)`
-같은 시나리오 내부에서 상대적인 위치를 나타내는 피처입니다.
-
-예:
-- `grp_mean_ratio`
-- `grp_zscore`
-- `grp_max_ratio`
-- `grp_min_diff`
-
-의미:
-- 현재 값이 같은 scenario 안에서 평균보다 얼마나 높은지
-- 최대/최소 대비 어느 수준인지
-
----
-
-### `add_slot_interaction_features(df)`
-시간 위치와 상태값의 상호작용을 생성합니다.
-
-예:
-- `slot_x_congestion_score`
-- `slot_progress_x_pack_utilization`
-- `late_slot_x_order_inflow_15m`
-
-의미:
-- 같은 혼잡도라도 초반/후반에서 영향이 다를 수 있다는 점 반영
-
----
-
-### `reduce_memory_and_fix_types(df)`
-- object → category 변환
-- int/float downcasting
-
-피처 수가 많아질 때 메모리 사용량을 줄이기 위한 함수입니다.
-
----
-
-### `make_features(df)`
-위의 모든 피처 엔지니어링 함수를 순서대로 호출합니다.
-
-즉, 실제로 파생 변수 생성의 중심이 되는 함수입니다.
+마지막에 타입 최적화(카테고리 변환, downcasting)로 메모리 사용량을 줄이며,
+실제 학습에는 `get_feature_columns()`에서 제외되지 않은 컬럼만 사용됩니다.
 
 ---
 
@@ -459,10 +306,7 @@ XGBoost용 범주형 정수 코드 변환
 
 ---
 
-## 5. 실행 환경 설정
-
-> 아래는 **Windows PowerShell 기준** 예시입니다.  
-> macOS/Linux 명령어도 함께 적어두었습니다.
+## 5. 실행 환경 설정 (Windows CMD 기준)
 
 ### 5-1. Python 버전 준비
 
@@ -470,7 +314,7 @@ XGBoost용 범주형 정수 코드 변환
 - Python 3.10 이상
 
 예시 확인:
-```bash
+```cmd
 python --version
 ```
 
@@ -478,33 +322,16 @@ python --version
 
 ### 5-2. 가상환경(venv) 생성
 
-#### Windows PowerShell
-```powershell
+```cmd
 python -m venv .venv
-```
-
-#### macOS / Linux
-```bash
-python3 -m venv .venv
 ```
 
 ---
 
 ### 5-3. 가상환경 활성화
 
-#### Windows PowerShell
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-#### Windows CMD
 ```cmd
 .venv\Scripts\activate.bat
-```
-
-#### macOS / Linux
-```bash
-source .venv/bin/activate
 ```
 
 활성화 후 프롬프트 앞에 `(.venv)`가 보이면 정상입니다.
@@ -524,13 +351,13 @@ source .venv/bin/activate
 
 설치 명령어:
 
-```bash
+```cmd
 pip install --upgrade pip
 pip install numpy pandas scikit-learn lightgbm catboost xgboost
 ```
 
 패키지 설치 확인:
-```bash
+```cmd
 pip list
 ```
 
@@ -553,11 +380,11 @@ data/
 
 ---
 
-## 7. 학습 실행 방법
+## 7. 학습 실행 방법 (CMD)
 
 ### 기본 실행
 
-```bash
+```cmd
 python train.py
 ```
 
@@ -570,15 +397,13 @@ python train.py
 
 ### 실험 이름을 지정해서 실행
 
-```bash
+```cmd
 python train.py --model-dir-name exp01
 ```
 
 이 경우 모델은 다음과 같이 저장됩니다.
 
-```bash
-./models/exp01/
-```
+`models/exp01/`
 
 ---
 
@@ -594,21 +419,19 @@ python train.py --model-dir-name exp01
 
 즉, 아래 명령어가 사실상 **대회 제출용 추론까지 포함한 실행 명령어**입니다.
 
-```bash
+```cmd
 python train.py
 ```
 
 또는
 
-```bash
-python train.py --model-dir-name exp01
+```cmd
+python train.py --model-dir-name exp1
 ```
 
 실행이 끝나면 최종 test 예측값이 아래 파일에 저장됩니다.
 
-```bash
-outputs/submission.csv
-```
+`outputs/submission.csv`
 
 이 파일이 대회 제출용 결과 파일입니다.
 
@@ -689,11 +512,9 @@ test 데이터에 대한 최종 앙상블 예측 결과입니다.
 
 ---
 
-## 11. 실행 예시 전체 절차
+## 11. 실행 예시 전체 절차 (Windows CMD)
 
-### Windows PowerShell 기준
-
-```powershell
+```cmd
 # 1) 프로젝트 폴더 이동
 cd C:\path\to\project
 
@@ -701,7 +522,7 @@ cd C:\path\to\project
 python -m venv .venv
 
 # 3) 가상환경 활성화
-.venv\Scripts\Activate.ps1
+.venv\Scripts\activate.bat
 
 # 4) 패키지 설치
 pip install --upgrade pip
@@ -712,9 +533,9 @@ python train.py --model-dir-name exp01
 ```
 
 실행 후 확인:
-```powershell
-dir .\outputs
-dir .\models\exp01
+```cmd
+dir outputs
+dir models\exp01
 ```
 
 ---
