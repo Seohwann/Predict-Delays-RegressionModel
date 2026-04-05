@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+import argparse
+import os
 import numpy as np
 from catboost import CatBoostRegressor
 
@@ -15,12 +17,28 @@ from utils import (
 )
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model-dir-name",
+        type=str,
+        default="",
+        help="models 하위에서 불러올 폴더명 (예: exp01 -> ./models/exp01)",
+    )
+    return parser.parse_args()
+
+
 def main():
-    ensure_dirs()
+    args = parse_args()
+
+    model_dir = os.path.join("./models", args.model_dir_name) if args.model_dir_name else "./models"
+    output_dir = "./outputs"
+
+    ensure_dirs(models_dir=model_dir, outputs_dir=output_dir)
 
     train, test, submission = build_datasets()
 
-    meta = load_json("./models/meta.json")
+    meta = load_json(os.path.join(model_dir, "meta.json"))
     feature_cols = meta["feature_cols"]
     cat_cols = meta["cat_cols"]
     w_lgb = meta["ensemble_weights"]["lgb"]
@@ -51,14 +69,14 @@ def main():
     pred_xgb = np.zeros(len(X_test))
 
     for fold in range(1, n_splits + 1):
-        lgb_model = load_pickle(f"./models/lgb_fold{fold}.pkl")
+        lgb_model = load_pickle(os.path.join(model_dir, f"lgb_fold{fold}.pkl"))
         pred_lgb += lgb_model.predict(X_test_lgb, num_iteration=lgb_model.best_iteration_) / n_splits
 
         cat_model = CatBoostRegressor()
-        cat_model.load_model(f"./models/cat_fold{fold}.cbm")
+        cat_model.load_model(os.path.join(model_dir, f"cat_fold{fold}.cbm"))
         pred_cat += cat_model.predict(X_test) / n_splits
 
-        xgb_model = load_pickle(f"./models/xgb_fold{fold}.pkl")
+        xgb_model = load_pickle(os.path.join(model_dir, f"xgb_fold{fold}.pkl"))
         pred_xgb += xgb_model.predict(X_test_xgb) / n_splits
 
         print(f"loaded and predicted fold {fold}")
@@ -66,9 +84,9 @@ def main():
     pred_ens = w_lgb * pred_lgb + w_cat * pred_cat + w_xgb * pred_xgb
 
     submission[TARGET] = pred_ens
-    submission.to_csv("./outputs/submission_inference.csv", index=False, encoding="utf-8-sig")
+    submission.to_csv(os.path.join(output_dir, "submission_inference.csv"), index=False, encoding="utf-8-sig")
 
-    print("\nSaved: ./outputs/submission_inference.csv")
+    print(f"\nSaved: {os.path.join(output_dir, 'submission_inference.csv')}")
 
 
 if __name__ == "__main__":

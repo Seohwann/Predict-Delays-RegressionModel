@@ -17,9 +17,9 @@ GROUP_COL = "scenario_id"
 LAYOUT_KEY = "layout_id"
 
 
-def ensure_dirs():
-    os.makedirs("./models", exist_ok=True)
-    os.makedirs("./outputs", exist_ok=True)
+def ensure_dirs(models_dir: str = "./models", outputs_dir: str = "./outputs"):
+    os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(outputs_dir, exist_ok=True)
 
 
 def safe_div(a, b, eps=1e-6):

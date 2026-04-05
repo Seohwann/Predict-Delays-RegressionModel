@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 
+import argparse
 import gc
 import itertools
+import os
 import numpy as np
 import pandas as pd
 
@@ -30,6 +32,17 @@ RANDOM_STATE = 42
 N_SPLITS = 5
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model-dir-name",
+        type=str,
+        default="",
+        help="models 하위에 사용할 저장 폴더명 (예: exp01 -> ./models/exp01)",
+    )
+    return parser.parse_args()
+
+
 def find_best_ensemble_weights(y_true, oof_lgb, oof_cat, oof_xgb):
     best_score = 1e18
     best_weights = None
@@ -52,7 +65,12 @@ def find_best_ensemble_weights(y_true, oof_lgb, oof_cat, oof_xgb):
 
 
 def main():
-    ensure_dirs()
+    args = parse_args()
+
+    model_dir = os.path.join("./models", args.model_dir_name) if args.model_dir_name else "./models"
+    output_dir = "./outputs"
+
+    ensure_dirs(models_dir=model_dir, outputs_dir=output_dir)
 
     train, test, submission = build_datasets()
 
@@ -133,7 +151,7 @@ def main():
         oof_lgb[va_idx] = valid_pred_lgb
         pred_lgb += test_pred_lgb / N_SPLITS
 
-        save_pickle(lgb_model, f"./models/lgb_fold{fold}.pkl")
+        save_pickle(lgb_model, os.path.join(model_dir, f"lgb_fold{fold}.pkl"))
 
         # ----------------------------------
         # CatBoost
@@ -172,7 +190,7 @@ def main():
         oof_cat[va_idx] = valid_pred_cat
         pred_cat += test_pred_cat / N_SPLITS
 
-        cat_model.save_model(f"./models/cat_fold{fold}.cbm")
+        cat_model.save_model(os.path.join(model_dir, f"cat_fold{fold}.cbm"))
 
         # ----------------------------------
         # XGBoost
@@ -183,7 +201,9 @@ def main():
 
         xgb_model = XGBRegressor(
             objective="reg:absoluteerror",
-            n_estimators=5000,
+            eval_metric="mae",
+            n_estimators=6000,
+            early_stopping_rounds=400,
             learning_rate=0.02,
             max_depth=8,
             min_child_weight=3,
@@ -204,8 +224,13 @@ def main():
             verbose=False,
         )
 
-        valid_pred_xgb = xgb_model.predict(X_valid_xgb)
-        test_pred_xgb = xgb_model.predict(X_test_xgb)
+        best_iter = getattr(xgb_model, "best_iteration", None)
+        if best_iter is not None and best_iter >= 0:
+            valid_pred_xgb = xgb_model.predict(X_valid_xgb, iteration_range=(0, best_iter + 1))
+            test_pred_xgb = xgb_model.predict(X_test_xgb, iteration_range=(0, best_iter + 1))
+        else:
+            valid_pred_xgb = xgb_model.predict(X_valid_xgb)
+            test_pred_xgb = xgb_model.predict(X_test_xgb)
 
         xgb_mae = mean_absolute_error(y_valid, valid_pred_xgb)
         print(f"Fold {fold} XGB MAE: {xgb_mae:.6f}")
@@ -213,7 +238,7 @@ def main():
         oof_xgb[va_idx] = valid_pred_xgb
         pred_xgb += test_pred_xgb / N_SPLITS
 
-        save_pickle(xgb_model, f"./models/xgb_fold{fold}.pkl")
+        save_pickle(xgb_model, os.path.join(model_dir, f"xgb_fold{fold}.pkl"))
 
         fold_scores.append({
             "fold": fold,
@@ -251,13 +276,13 @@ def main():
     oof_df["oof_cat"] = oof_cat
     oof_df["oof_xgb"] = oof_xgb
     oof_df["oof_ens"] = oof_ens
-    oof_df.to_csv("./outputs/oof.csv", index=False, encoding="utf-8-sig")
+    oof_df.to_csv(os.path.join(output_dir, "oof.csv"), index=False, encoding="utf-8-sig")
 
     # ----------------------------------
     # submission 저장
     # ----------------------------------
     submission[TARGET] = pred_ens
-    submission.to_csv("./outputs/submission.csv", index=False, encoding="utf-8-sig")
+    submission.to_csv(os.path.join(output_dir, "submission.csv"), index=False, encoding="utf-8-sig")
 
     # ----------------------------------
     # meta 저장
@@ -279,7 +304,7 @@ def main():
         "oof_mae_xgb": float(mean_absolute_error(y, oof_xgb)),
         "oof_mae_ens": float(mean_absolute_error(y, oof_ens)),
     }
-    save_json(meta, "./models/meta.json")
+    save_json(meta, os.path.join(model_dir, "meta.json"))
 
     print("\n================ Result ================")
     print(f"OOF LGB MAE : {meta['oof_mae_lgb']:.6f}")
@@ -288,12 +313,12 @@ def main():
     print(f"OOF ENS MAE : {meta['oof_mae_ens']:.6f}")
 
     print("\nSaved:")
-    print("- ./outputs/oof.csv")
-    print("- ./outputs/submission.csv")
-    print("- ./models/meta.json")
-    print("- ./models/lgb_fold*.pkl")
-    print("- ./models/cat_fold*.cbm")
-    print("- ./models/xgb_fold*.pkl")
+    print(f"- {os.path.join(output_dir, 'oof.csv')}")
+    print(f"- {os.path.join(output_dir, 'submission.csv')}")
+    print(f"- {os.path.join(model_dir, 'meta.json')}")
+    print(f"- {os.path.join(model_dir, 'lgb_fold*.pkl')}")
+    print(f"- {os.path.join(model_dir, 'cat_fold*.cbm')}")
+    print(f"- {os.path.join(model_dir, 'xgb_fold*.pkl')}")
 
 
 if __name__ == "__main__":
