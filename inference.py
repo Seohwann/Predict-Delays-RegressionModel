@@ -20,7 +20,7 @@ from utils import (
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--model-dir-name",
+        "--name",
         type=str,
         default="",
         help="models 하위에서 불러올 폴더명 (예: exp01 -> ./models/exp01)",
@@ -31,7 +31,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    model_dir = os.path.join("./models", args.model_dir_name) if args.model_dir_name else "./models"
+    model_dir = os.path.join("./models", args.name) if args.name else "./models"
     output_dir = "./outputs"
 
     ensure_dirs(models_dir=model_dir, outputs_dir=output_dir)

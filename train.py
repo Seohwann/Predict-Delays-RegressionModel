@@ -13,6 +13,8 @@ from sklearn.metrics import mean_absolute_error
 from lightgbm import LGBMRegressor, early_stopping, log_evaluation
 from catboost import CatBoostRegressor
 from xgboost import XGBRegressor
+from sklearn.ensemble import ExtraTreesRegressor
+from sklearn.impute import SimpleImputer
 
 from utils import (
     TARGET,
@@ -35,7 +37,7 @@ N_SPLITS = 5
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--model-dir-name",
+        "--name",
         type=str,
         default="",
         help="models 하위에 사용할 저장 폴더명 (예: exp01 -> ./models/exp01)",
@@ -43,23 +45,28 @@ def parse_args():
     return parser.parse_args()
 
 
-def find_best_ensemble_weights(y_true, oof_lgb, oof_cat, oof_xgb):
+def find_best_ensemble_weights(y_true, oof_lgb, oof_cat, oof_xgb, oof_et):
     best_score = 1e18
     best_weights = None
 
     grid = np.arange(0.0, 1.01, 0.05)
 
-    for w_lgb, w_cat in itertools.product(grid, grid):
-        w_xgb = 1.0 - w_lgb - w_cat
-        if w_xgb < 0 or w_xgb > 1:
+    for w_lgb, w_cat, w_xgb in itertools.product(grid, grid, grid):
+        w_et = 1.0 - w_lgb - w_cat - w_xgb
+        if w_et < 0 or w_et > 1:
             continue
 
-        pred = w_lgb * oof_lgb + w_cat * oof_cat + w_xgb * oof_xgb
+        pred = w_lgb * oof_lgb + w_cat * oof_cat + w_xgb * oof_xgb + w_et * oof_et
         score = mean_absolute_error(y_true, pred)
 
         if score < best_score:
             best_score = score
-            best_weights = (round(float(w_lgb), 3), round(float(w_cat), 3), round(float(w_xgb), 3))
+            best_weights = (
+                round(float(w_lgb), 3),
+                round(float(w_cat), 3),
+                round(float(w_xgb), 3),
+                round(float(w_et), 3),
+            )
 
     return best_weights, best_score
 
@@ -67,7 +74,7 @@ def find_best_ensemble_weights(y_true, oof_lgb, oof_cat, oof_xgb):
 def main():
     args = parse_args()
 
-    model_dir = os.path.join("./models", args.model_dir_name) if args.model_dir_name else "./models"
+    model_dir = os.path.join("./models", args.name) if args.name else "./models"
     output_dir = "./outputs"
 
     ensure_dirs(models_dir=model_dir, outputs_dir=output_dir)
@@ -91,10 +98,12 @@ def main():
     oof_lgb = np.zeros(len(X))
     oof_cat = np.zeros(len(X))
     oof_xgb = np.zeros(len(X))
+    oof_et  = np.zeros(len(X))
 
     pred_lgb = np.zeros(len(X_test))
     pred_cat = np.zeros(len(X_test))
     pred_xgb = np.zeros(len(X_test))
+    pred_et  = np.zeros(len(X_test))
 
     fold_scores = []
 
@@ -118,15 +127,15 @@ def main():
         lgb_model = LGBMRegressor(
             objective="mae",
             n_estimators=6000,
-            learning_rate=0.015,
-            num_leaves=63,
+            learning_rate=0.02,
+            num_leaves=127,
             max_depth=-1,
             min_child_samples=20,
             subsample=0.85,
             subsample_freq=1,
             colsample_bytree=0.8,
-            reg_alpha=0.3,
-            reg_lambda=2.0,
+            reg_alpha=0.1,
+            reg_lambda=1.0,
             random_state=RANDOM_STATE + fold,
             n_jobs=-1,
         )
@@ -240,32 +249,82 @@ def main():
 
         save_pickle(xgb_model, os.path.join(model_dir, f"xgb_fold{fold}.pkl"))
 
+        # ----------------------------------
+        # ExtraTrees
+        # sklearn은 NaN 미지원 → train 기준 median으로 수치형 결측 채움
+        # ----------------------------------
+        num_cols = [c for c in X_train.columns if c not in cat_cols]
+
+        imputer = SimpleImputer(strategy="median")
+        X_train_et = X_train.copy()
+        X_valid_et = X_valid.copy()
+        X_test_et  = X_test_tmp.copy()
+
+        X_train_et[num_cols] = imputer.fit_transform(X_train_et[num_cols])
+        X_valid_et[num_cols] = imputer.transform(X_valid_et[num_cols])
+        X_test_et[num_cols]  = imputer.transform(X_test_et[num_cols])
+
+        # 범주형 컬럼은 label encoding (category → codes)
+        for col in cat_cols:
+            all_cats = pd.Categorical(
+                pd.concat([X_train_et[col], X_valid_et[col], X_test_et[col]])
+            ).categories
+            X_train_et[col] = pd.Categorical(X_train_et[col], categories=all_cats).codes
+            X_valid_et[col] = pd.Categorical(X_valid_et[col], categories=all_cats).codes
+            X_test_et[col]  = pd.Categorical(X_test_et[col],  categories=all_cats).codes
+
+        et_model = ExtraTreesRegressor(
+            n_estimators=300,
+            criterion="squared_error",    # absolute_error는 O(n log n)으로 극단적으로 느림
+            max_features=0.5,             # feature 수가 많아 절반만 사용 → 다양성 확보
+            min_samples_leaf=10,          # lag/roll feature 노이즈 과적합 방지
+            max_depth=None,               # bagging계열은 깊은 트리가 기본
+            bootstrap=False,              # ExtraTrees 기본값: 전체 데이터 사용
+            random_state=RANDOM_STATE + fold,
+            n_jobs=-1,
+        )
+
+        et_model.fit(X_train_et, y_train)
+
+        valid_pred_et = et_model.predict(X_valid_et)
+        test_pred_et  = et_model.predict(X_test_et)
+
+        et_mae = mean_absolute_error(y_valid, valid_pred_et)
+        print(f"Fold {fold} ET  MAE: {et_mae:.6f}")
+
+        oof_et[va_idx] = valid_pred_et
+        pred_et += test_pred_et / N_SPLITS
+
+        save_pickle(et_model, os.path.join(model_dir, f"et_fold{fold}.pkl"))
+
         fold_scores.append({
             "fold": fold,
             "lgb_mae": float(lgb_mae),
             "cat_mae": float(cat_mae),
             "xgb_mae": float(xgb_mae),
+            "et_mae":  float(et_mae),
         })
 
-        del lgb_model, cat_model, xgb_model
+        del lgb_model, cat_model, xgb_model, et_model
         del X_train, X_valid, y_train, y_valid
         del X_train_lgb, X_valid_lgb, X_test_lgb
         del X_train_xgb, X_valid_xgb, X_test_xgb
+        del X_train_et, X_valid_et, X_test_et
         del X_test_tmp
         gc.collect()
 
     # ----------------------------------
     # OOF 기준 앙상블 weight 탐색
     # ----------------------------------
-    best_weights, best_score = find_best_ensemble_weights(y, oof_lgb, oof_cat, oof_xgb)
-    w_lgb, w_cat, w_xgb = best_weights
+    best_weights, best_score = find_best_ensemble_weights(y, oof_lgb, oof_cat, oof_xgb, oof_et)
+    w_lgb, w_cat, w_xgb, w_et = best_weights
 
     print("\n========== Ensemble Weight Search ==========")
-    print(f"best weights -> LGB: {w_lgb}, CAT: {w_cat}, XGB: {w_xgb}")
+    print(f"best weights -> LGB: {w_lgb}, CAT: {w_cat}, XGB: {w_xgb}, ET: {w_et}")
     print(f"best OOF MAE -> {best_score:.6f}")
 
-    oof_ens = w_lgb * oof_lgb + w_cat * oof_cat + w_xgb * oof_xgb
-    pred_ens = w_lgb * pred_lgb + w_cat * pred_cat + w_xgb * pred_xgb
+    oof_ens  = w_lgb * oof_lgb  + w_cat * oof_cat  + w_xgb * oof_xgb  + w_et * oof_et
+    pred_ens = w_lgb * pred_lgb + w_cat * pred_cat + w_xgb * pred_xgb + w_et * pred_et
 
     # ----------------------------------
     # OOF 저장
@@ -275,6 +334,7 @@ def main():
     oof_df["oof_lgb"] = oof_lgb
     oof_df["oof_cat"] = oof_cat
     oof_df["oof_xgb"] = oof_xgb
+    oof_df["oof_et"]  = oof_et
     oof_df["oof_ens"] = oof_ens
     oof_df.to_csv(os.path.join(output_dir, "oof.csv"), index=False, encoding="utf-8-sig")
 
@@ -297,11 +357,13 @@ def main():
             "lgb": w_lgb,
             "cat": w_cat,
             "xgb": w_xgb,
+            "et":  w_et,
         },
         "cv_scores": fold_scores,
         "oof_mae_lgb": float(mean_absolute_error(y, oof_lgb)),
         "oof_mae_cat": float(mean_absolute_error(y, oof_cat)),
         "oof_mae_xgb": float(mean_absolute_error(y, oof_xgb)),
+        "oof_mae_et":  float(mean_absolute_error(y, oof_et)),
         "oof_mae_ens": float(mean_absolute_error(y, oof_ens)),
     }
     save_json(meta, os.path.join(model_dir, "meta.json"))
@@ -310,6 +372,7 @@ def main():
     print(f"OOF LGB MAE : {meta['oof_mae_lgb']:.6f}")
     print(f"OOF CAT MAE : {meta['oof_mae_cat']:.6f}")
     print(f"OOF XGB MAE : {meta['oof_mae_xgb']:.6f}")
+    print(f"OOF ET  MAE : {meta['oof_mae_et']:.6f}")
     print(f"OOF ENS MAE : {meta['oof_mae_ens']:.6f}")
 
     print("\nSaved:")
@@ -319,6 +382,7 @@ def main():
     print(f"- {os.path.join(model_dir, 'lgb_fold*.pkl')}")
     print(f"- {os.path.join(model_dir, 'cat_fold*.cbm')}")
     print(f"- {os.path.join(model_dir, 'xgb_fold*.pkl')}")
+    print(f"- {os.path.join(model_dir, 'et_fold*.pkl')}")
 
 
 if __name__ == "__main__":
