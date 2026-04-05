@@ -525,17 +525,19 @@ python -m venv .venv
 .venv\Scripts\activate.bat
 
 # 4) 패키지 설치
-pip install --upgrade pip
-pip install numpy pandas scikit-learn lightgbm catboost xgboost
+pip install -r requirements.txt
 
 # 5) 학습 + test 추론 실행
-python train.py --model-dir-name exp01
+python train.py --name exp1
+
+# 6) 추론만 실행
+python inference.py --name exp1
 ```
 
 실행 후 확인:
 ```cmd
 dir outputs
-dir models\exp01
+dir models\exp1
 ```
 
 ---
