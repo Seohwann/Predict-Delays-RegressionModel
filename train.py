@@ -15,6 +15,8 @@ from catboost import CatBoostRegressor
 from xgboost import XGBRegressor
 from sklearn.ensemble import ExtraTreesRegressor
 from sklearn.impute import SimpleImputer
+import optuna
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 from utils import (
     TARGET,
@@ -43,6 +45,51 @@ def parse_args():
         help="models 하위에 사용할 저장 폴더명 (예: exp01 -> ./models/exp01)",
     )
     return parser.parse_args()
+
+
+def tune_lgb_params(X_tr, y_tr, X_va, y_va, cat_cols, n_trials=50, random_state=42):
+    """Fold 1 데이터로 LGB 하이퍼파라미터를 Optuna로 탐색. best params 반환."""
+    X_tr_lgb = convert_cat_for_lgb(X_tr, cat_cols)
+    X_va_lgb = convert_cat_for_lgb(X_va, cat_cols)
+
+    def objective(trial):
+        params = {
+            "objective": "mae",
+            "n_estimators": 3000,
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.05, log=True),
+            "num_leaves": trial.suggest_int("num_leaves", 63, 511),
+            "max_depth": -1,
+            "min_child_samples": trial.suggest_int("min_child_samples", 5, 50),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "subsample_freq": 1,
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 1.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 5.0, log=True),
+            "random_state": random_state,
+            "n_jobs": -1,
+        }
+        model = LGBMRegressor(**params)
+        model.fit(
+            X_tr_lgb, y_tr,
+            eval_set=[(X_va_lgb, y_va)],
+            eval_metric="l1",
+            callbacks=[
+                early_stopping(stopping_rounds=200, verbose=False),
+                log_evaluation(period=0),
+            ],
+        )
+        pred = model.predict(X_va_lgb, num_iteration=model.best_iteration_)
+        return mean_absolute_error(y_va, pred)
+
+    study = optuna.create_study(
+        direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=random_state),
+    )
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+
+    print(f"\n[Optuna LGB] best MAE : {study.best_value:.6f}")
+    print(f"[Optuna LGB] best params: {study.best_params}")
+    return study.best_params
 
 
 def find_best_ensemble_weights(y_true, oof_lgb, oof_cat, oof_xgb, oof_et):
@@ -95,6 +142,23 @@ def main():
 
     gkf = GroupKFold(n_splits=N_SPLITS)
 
+    # ----------------------------------
+    # Optuna: Fold 1로 LGB 파라미터 탐색
+    # ----------------------------------
+    print("\n========== Optuna LGB Tuning (Fold 1) ==========")
+    fold1_splits = list(gkf.split(X, y, groups))
+    tr_idx_f1, va_idx_f1 = fold1_splits[0]
+    X_tr_f1, X_va_f1, _ = fill_missing_for_models(
+        X.iloc[tr_idx_f1].copy(), X.iloc[va_idx_f1].copy(), X_test.copy(), cat_cols
+    )
+    best_lgb_params = tune_lgb_params(
+        X_tr_f1, y.iloc[tr_idx_f1],
+        X_va_f1, y.iloc[va_idx_f1],
+        cat_cols, n_trials=50, random_state=RANDOM_STATE,
+    )
+    del X_tr_f1, X_va_f1
+    gc.collect()
+
     oof_lgb = np.zeros(len(X))
     oof_cat = np.zeros(len(X))
     oof_xgb = np.zeros(len(X))
@@ -127,17 +191,11 @@ def main():
         lgb_model = LGBMRegressor(
             objective="mae",
             n_estimators=6000,
-            learning_rate=0.02,
-            num_leaves=127,
             max_depth=-1,
-            min_child_samples=20,
-            subsample=0.85,
             subsample_freq=1,
-            colsample_bytree=0.8,
-            reg_alpha=0.1,
-            reg_lambda=1.0,
             random_state=RANDOM_STATE + fold,
             n_jobs=-1,
+            **best_lgb_params,      # Optuna로 탐색한 최적 파라미터 적용
         )
 
         lgb_model.fit(
