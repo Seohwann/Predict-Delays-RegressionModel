@@ -275,11 +275,11 @@ def main():
 
         et_model = ExtraTreesRegressor(
             n_estimators=300,
-            criterion="squared_error",    # absolute_error는 O(n log n)으로 극단적으로 느림
-            max_features=0.5,             # feature 수가 많아 절반만 사용 → 다양성 확보
-            min_samples_leaf=10,          # lag/roll feature 노이즈 과적합 방지
-            max_depth=None,               # bagging계열은 깊은 트리가 기본
-            bootstrap=False,              # ExtraTrees 기본값: 전체 데이터 사용
+            criterion="squared_error",
+            max_features=0.5,
+            min_samples_leaf=10,
+            max_depth=None,
+            bootstrap=False,
             random_state=RANDOM_STATE + fold,
             n_jobs=-1,
         )
